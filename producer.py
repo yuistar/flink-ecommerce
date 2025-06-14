@@ -8,6 +8,7 @@ from confluent_kafka import SerializingProducer
 
 fake = Faker()
 
+
 def generate_sales_transactions():
     user = fake.simple_profile()
     return {
@@ -25,42 +26,46 @@ def generate_sales_transactions():
     }
 
 
-def delivery_report(err, msg):
-    if err is not None:
-        print(f"Message deliver failed: {err}")
-    else:
-        print(f"Message delivered to: {msg.topic} [{msg.partition()}]")
+class TransactionGen:
+    def __init__(self):
+        self.producer = SerializingProducer({
+            "bootstrap.servers": "localhost:9092"
+        })
+        self.message_count = 0
+
+    def delivery_report(self, err, msg):
+        self.message_count += 1
+        if err is not None:
+            print(f"Message deliver failed: {err}")
+        else:
+            print(f"[{self.message_count}] Message delivered to: {msg.topic} [{msg.partition()}]")
 
 
-def main():
-    topic = 'financial_transactions'
-    producer= SerializingProducer({
-        'bootstrap.servers': 'localhost:9092'
-    })
+    def produce_messages(self, topic = 'product_transactions'):
 
-    curr_time = datetime.now(timezone.utc)
+        curr_time = datetime.now(timezone.utc)
 
-    while (datetime.now(timezone.utc) - curr_time).seconds < 120:
-        try:
-            transaction = generate_sales_transactions()
-            transaction['totalAmount'] = transaction['productPrice'] * transaction['productQuantity']
+        while (datetime.now(timezone.utc) - curr_time).seconds < 120:
+            try:
+                transaction = generate_sales_transactions()
+                transaction['totalAmount'] = transaction['productPrice'] * transaction['productQuantity']
 
-            print(transaction)
+                print(transaction)
 
-            producer.produce(topic,
-                             key=transaction['transactionId'],
-                             value=json.dumps(transaction),
-                             on_delivery=delivery_report
-                             )
-            producer.poll(0)
+                self.producer.produce(topic,
+                                 key=transaction['transactionId'],
+                                 value=json.dumps(transaction),
+                                 on_delivery=self.delivery_report
+                                 )
+                self.producer.poll(0)
 
-            #wait for 5 seconds before sending the next transaction
-            time.sleep(5)
-        except BufferError:
-            print("Buffer full! Waiting...")
-            time.sleep(1)
-        except Exception as e:
-            print(e)
+                #wait for 5 seconds before sending the next transaction
+                time.sleep(5)
+            except BufferError:
+                print("Buffer full! Waiting...")
+                time.sleep(1)
+            except Exception as e:
+                print(e)
 
 if __name__ == "__main__":
-    main()
+    TransactionGen().produce_messages()
