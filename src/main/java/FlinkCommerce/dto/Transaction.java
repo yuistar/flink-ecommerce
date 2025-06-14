@@ -1,10 +1,11 @@
 package FlinkCommerce.dto;
 
 import lombok.Data;
+import java.io.Serializable;
 import java.sql.Timestamp;
 
 @Data
-public class Transaction {
+public class Transaction implements Serializable {
     private String transactionId;
     private String productId;
     private String productName;

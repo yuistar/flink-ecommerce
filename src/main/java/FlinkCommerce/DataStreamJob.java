@@ -23,15 +23,12 @@ import FlinkCommerce.dto.SalesPerCategory;
 import FlinkCommerce.dto.SalesPerDay;
 import FlinkCommerce.dto.SalesPerMonth;
 import FlinkCommerce.dto.Transaction;
-import org.apache.flink.api.common.SerializableSerializer;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.connector.base.DeliveryGuarantee;
+
+import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.connector.elasticsearch.sink.Elasticsearch7SinkBuilder;
 import org.apache.flink.connector.elasticsearch.sink.FlushBackoffType;
-
-import org.apache.flink.connector.jdbc.core.datastream.Jdbc;
-import org.apache.flink.connector.jdbc.datasource.connections.SimpleJdbcConnectionProvider;
-import org.apache.flink.connector.jdbc.datasource.connections.xa.PoolingXaConnectionProvider;;
 import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -44,25 +41,24 @@ import org.apache.flink.connector.jdbc.core.datastream.sink.JdbcSink;
 
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
-import org.apache.flink.elasticsearch7.shaded.org.apache.http.HttpHost;
-import org.apache.flink.elasticsearch7.shaded.org.elasticsearch.action.index.IndexRequest;
-import org.apache.flink.elasticsearch7.shaded.org.elasticsearch.client.Requests;
-import org.apache.flink.elasticsearch7.shaded.org.elasticsearch.common.xcontent.XContentType;
 
-import org.apache.flink.util.function.SerializableSupplier;
+import org.apache.http.HttpHost;
+import org.apache.kafka.clients.consumer.OffsetResetStrategy;
+import org.elasticsearch.action.index.IndexRequest;
+import org.elasticsearch.client.Requests;
+import org.elasticsearch.common.xcontent.XContentType;
 import org.postgresql.xa.PGXADataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.sql.XADataSource;
 import java.sql.Date;
 import java.util.function.Supplier;
+import javax.sql.XADataSource;
 
 import static FlinkCommerce.utils.JsonUtil.convertObjectToJson;
-import static org.apache.flink.connector.base.DeliveryGuarantee.EXACTLY_ONCE;
 
 /**
- * Skeleton for a Flink DataStream Job.
+ * a Flink DataStream Job.
  *
  * <p>For a tutorial how to write a Flink application, check the
  * tutorials and examples on the <a href="https://flink.apache.org">Flink Website</a>.
@@ -82,18 +78,18 @@ public class DataStreamJob {
 
 
     public static void main(String[] args) throws Exception {
-        // Sets up the execution environment, which is the main entry point
-        // to building Flink applications.
+        // Sets up the execution environment, which is the main entry point to building Flink applications.
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.enableCheckpointing(1000, CheckpointingMode.EXACTLY_ONCE);
 
-        final String topic = "financial_transactions";
+        final String topic = "product_transactions";
 
         KafkaSource<Transaction> source = KafkaSource.<Transaction>builder()
                 .setBootstrapServers(bootstrapServer)
                 .setTopics(topic)
                 .setGroupId("flink-group")
-                .setStartingOffsets(OffsetsInitializer.earliest())
+                .setProperty("commit.offsets.on.checkpoint", "true")
+                .setStartingOffsets(OffsetsInitializer.committedOffsets(OffsetResetStrategy.EARLIEST))
                 .setValueOnlyDeserializer(new JSONValueDeserializationSchema())
                 .build();
 
@@ -106,6 +102,7 @@ public class DataStreamJob {
                 .withBatchIntervalMs(200)
                 .withMaxRetries(5)
                 .build();
+
         JdbcExecutionOptions zeroRetriesExecOptions = new JdbcExecutionOptions.Builder()
                 .withMaxRetries(0)
                 .build();
@@ -143,7 +140,7 @@ public class DataStreamJob {
                         "transaction_date TIMESTAMP, " +
                         "payment_method VARCHAR(255) " + ")", (preparedStatement, transaction) -> {})
                         .withExecutionOptions(execOptions)
-                        .buildAtLeastOnce(new SimpleJdbcConnectionProvider(connOptions)))
+                        .buildAtLeastOnce(connOptions))
                 .name("Create Transaction Table Sink");
 
         // in postgres, create sales_per_category table
@@ -157,7 +154,7 @@ public class DataStreamJob {
                         ")",
                 (JdbcStatementBuilder<Transaction>) (preparedStatement, transaction) -> {})
                 .withExecutionOptions(execOptions)
-                .buildAtLeastOnce(new SimpleJdbcConnectionProvider(connOptions)))
+                .buildAtLeastOnce(connOptions))
                 .name("Create Sales Per Category Table");
 
         //create sales_per_day table sink
@@ -169,7 +166,7 @@ public class DataStreamJob {
                         ")",
                 (JdbcStatementBuilder<Transaction>) (preparedStatement, transaction) -> {})
                 .withExecutionOptions(execOptions)
-                .buildAtLeastOnce(new SimpleJdbcConnectionProvider(connOptions)))
+                .buildAtLeastOnce(connOptions))
                 .name("Create Sales Per Day Table");
 
         //create sales_per_month table sink
@@ -183,17 +180,17 @@ public class DataStreamJob {
                         ")",
                 (JdbcStatementBuilder<Transaction>) (preparedStatement, transaction) -> {})
                 .withExecutionOptions(execOptions)
-                .buildAtLeastOnce(new SimpleJdbcConnectionProvider(connOptions)))
+                .buildAtLeastOnce(connOptions))
                 .name("Create Sales Per Month Table");
 
         // upsert the transaction data
-        // [TODO] change to exactly Once Sink
-        SerializableSupplier<XADataSource> supplier = () -> xaDataSource;
+        // Exactly once is guaranteed by primary key as well as performing upsert by handling conflict
+        // Flink's JDBC connector expects ? placeholders, not PostgreSQL's native $1, $2, $3... syntax
         transactionStream.sinkTo(JdbcSink.<Transaction>builder()
                 .withQueryStatement(
                 "INSERT INTO transactions(transaction_id, product_id, product_name, product_category, product_price, " +
                         "product_quantity, product_brand, total_amount, currency, customer_id, transaction_date, payment_method) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+                        "VALUES (?, ?, ?,?, ?, ?,?, ?, ?,?, ?, ?) " +
                         "ON CONFLICT (transaction_id) DO UPDATE SET " +
                         "product_id = EXCLUDED.product_id, " +
                         "product_name  = EXCLUDED.product_name, " +
@@ -206,7 +203,7 @@ public class DataStreamJob {
                         "customer_id  = EXCLUDED.customer_id, " +
                         "transaction_date = EXCLUDED.transaction_date, " +
                         "payment_method = EXCLUDED.payment_method ",
-//                        + "WHERE transactions.transaction_id = EXCLUDED.transaction_id ",
+
                 (JdbcStatementBuilder<Transaction>) (preparedStatement, transaction) -> {
                     preparedStatement.setString(1, transaction.getTransactionId());
                     preparedStatement.setString(2, transaction.getProductId());
@@ -221,7 +218,7 @@ public class DataStreamJob {
                     preparedStatement.setTimestamp(11, transaction.getTransactionDate());
                     preparedStatement.setString(12, transaction.getPaymentMethod());
                 }).withExecutionOptions(execOptions)
-                  .buildAtLeastOnce(new SimpleJdbcConnectionProvider(connOptions)))
+                  .buildAtLeastOnce(connOptions))
         .name("Insert Transaction data");
 
         // upsert the sales_per_category data, grouping by category
@@ -250,7 +247,7 @@ public class DataStreamJob {
                             preparedStatement.setDouble(3, salesPerCategory.getTotalSales());
                         })
                         .withExecutionOptions(execOptions)
-                        .buildAtLeastOnce(new SimpleJdbcConnectionProvider(connOptions)))
+                        .buildAtLeastOnce(connOptions))
                 .name("update Category total");
 
 
@@ -270,28 +267,30 @@ public class DataStreamJob {
                         "INSERT INTO sales_per_day(transaction_date, total_sales) " +
                                 "VALUES (?, ?) " +
                                 "ON CONFLICT (transaction_date) DO UPDATE SET " +
-                                "total_sales = EXCLUDED.total_sales " +
-                                "WHERE sales_per_day.transaction_date = EXCLUDED.transaction_date",
+                                "total_sales = EXCLUDED.total_sales ",
                         (JdbcStatementBuilder<SalesPerDay>) (preparedStatement, salesPerDay) -> {
                             preparedStatement.setDate(1, salesPerDay.getTransactionDate());
                             preparedStatement.setDouble(2, salesPerDay.getTotalSales());
                         })
                         .withExecutionOptions(execOptions)
-                        .buildAtLeastOnce(new SimpleJdbcConnectionProvider(connOptions)))
+                        .buildAtLeastOnce(connOptions))
                 .name("update sales_per_day total");
 
         // upsert the sales_per_month data, grouping by year, month
-
         transactionStream.map(
                         transaction -> {
                             Date transactionDate = new Date(transaction.getTransactionDate().getTime());
                             Integer year = transactionDate.toLocalDate().getYear();
                             Integer month = transactionDate.toLocalDate().getMonthValue();
                             double totalSales = transaction.getTotalAmount();
-                            // [TODO] how to use composite key of both year and month
                             return new SalesPerMonth(year, month, totalSales);
                         }
-                ).keyBy(SalesPerMonth::getMonth)
+                ).keyBy(new KeySelector<SalesPerMonth, Tuple2<Integer, Integer>>() {
+                    @Override
+                    public Tuple2<Integer, Integer> getKey(SalesPerMonth salesPerMonth) throws Exception {
+                        return new Tuple2<>(salesPerMonth.getMonth(), salesPerMonth.getYear());
+                    }
+                })
                 .reduce((salesPerMonth, t1) -> {
                     salesPerMonth.setTotalSales(salesPerMonth.getTotalSales() + t1.getTotalSales());
                     return salesPerMonth;
@@ -299,33 +298,36 @@ public class DataStreamJob {
                         .withQueryStatement(
                         "INSERT INTO sales_per_month(year, month, total_sales) " +
                                 "VALUES (?, ?, ?) " +
-                                "ON CONFLICT (year, month) DO UPDATE SET " +
-                                "total_sales = EXCLUDED.total_sales " +
-                                "WHERE sales_per_month.year = EXCLUDED.year " +
-                                "AND sales_per_month.month = EXCLUDED.month",
+                                "ON CONFLICT (year, month) DO UPDATE " +
+                                "SET total_sales = EXCLUDED.total_sales ",
                         (JdbcStatementBuilder<SalesPerMonth>) (preparedStatement, salesPerMonth) -> {
                             preparedStatement.setInt(1, salesPerMonth.getYear());
                             preparedStatement.setInt(2, salesPerMonth.getMonth());
                             preparedStatement.setDouble(3, salesPerMonth.getTotalSales());
                         })
                         .withExecutionOptions(execOptions)
-                        .buildAtLeastOnce(new SimpleJdbcConnectionProvider(connOptions)))
+                        .buildAtLeastOnce(connOptions))
                 .name("update sales_per_month total");
 
         // add to elastic search
         transactionStream.sinkTo(new Elasticsearch7SinkBuilder<Transaction>()
                         .setHosts(new HttpHost("localhost", 9200, "http"))
                         .setEmitter((transaction, runtimeContext, requestIndexer) -> {
+                            LOG.info("emit transaction= {}", convertObjectToJson(transaction));
+                            if (transaction != null && transaction.getTransactionId() != null) {
+                                IndexRequest indexRequest = Requests.indexRequest()
+                                        .index("transactions")
+                                        .id(transaction.getTransactionId())
+                                        .source(convertObjectToJson(transaction), XContentType.JSON);
 
-                            IndexRequest indexRequest = Requests.indexRequest()
-                                    .index("transactions")
-                                    .id(transaction.getTransactionId())
-                                    .source(convertObjectToJson(transaction), XContentType.JSON);
-                            requestIndexer.add(indexRequest);
-                            LOG.info("emit transaction={}", transaction.getTransactionId());
+                                LOG.info("indexReq= {}", indexRequest);
+                                requestIndexer.add(indexRequest);
+                            }
                         })
-//                        .setBulkFlushMaxActions(1)
-                        .setBulkFlushBackoffStrategy(FlushBackoffType.EXPONENTIAL, 5, 1000)
+                        .setBulkFlushMaxActions(1000)
+                        .setBulkFlushMaxSizeMb(1)
+                        .setBulkFlushInterval(5000)
+                        .setBulkFlushBackoffStrategy(FlushBackoffType.EXPONENTIAL, 2, 1000)
                         .build())
                 .name("Elasticsearch sink");
 
