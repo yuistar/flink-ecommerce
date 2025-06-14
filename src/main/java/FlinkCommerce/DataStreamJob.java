@@ -23,15 +23,16 @@ import FlinkCommerce.dto.SalesPerCategory;
 import FlinkCommerce.dto.SalesPerDay;
 import FlinkCommerce.dto.SalesPerMonth;
 import FlinkCommerce.dto.Transaction;
-import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.connector.elasticsearch.sink.Elasticsearch7SinkBuilder;
-import org.apache.flink.connector.elasticsearch.sink.FlushBackoffType;
 import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+
+import org.apache.flink.connector.elasticsearch.sink.Elasticsearch7SinkBuilder;
+import org.apache.flink.connector.elasticsearch.sink.FlushBackoffType;
 
 import org.apache.flink.connector.jdbc.JdbcConnectionOptions;
 import org.apache.flink.connector.jdbc.JdbcExactlyOnceOptions;
@@ -324,7 +325,7 @@ public class DataStreamJob {
                                 requestIndexer.add(indexRequest);
                             }
                         })
-                        .setBulkFlushMaxActions(1000)
+                        .setBulkFlushMaxActions(1)
                         .setBulkFlushMaxSizeMb(1)
                         .setBulkFlushInterval(5000)
                         .setBulkFlushBackoffStrategy(FlushBackoffType.EXPONENTIAL, 2, 1000)
