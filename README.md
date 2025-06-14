@@ -51,7 +51,7 @@ In Elastic Dev Tools, you can run Elasticsearch API such as
 
 ### Learning 
 - Flink DataStreamAPI and its architecture
-
+  ![](flink-server-runtime.png)
 
 ### To Do
 - Add unit tests 
