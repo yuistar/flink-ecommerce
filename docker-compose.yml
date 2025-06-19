@@ -36,29 +36,32 @@ x-kafka-common:
 
 
 services:
+  
   flink-jobmanager:
     image: flink:2.0.0-java17
     container_name: flink-jobmanager
     ports:
       - "8081:8081"
-    environment:
-      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
-      - JOB_MANAGER_RPC_PORT=6123
     networks:
       - kafka-flink-net
     volumes:
       - ./target/FlinkEcommerce-2.0-SNAPSHOT.jar:/opt/flink/datastream/FlinkEcommerce-2.0-SNAPSHOT.jar
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.rpc.port: 6123
+        parallelism.default: 2
+    entrypoint: ["/docker-entrypoint.sh", "jobmanager"]
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8081" ]
       interval: 15s
       timeout: 10s
       retries: 3
       start_period: 30s
-    entrypoint: ["/docker-entrypoint.sh", "jobmanager"]
     post_start: 
       - command: ["echo 'post_start'", "/opt/flink/bin/flink run -c FlinkCommerce.DataStreamJob /opt/flink/datastream/FlinkEcommerce-2.0-SNAPSHOT.jar --POSTGRES_HOSTNAME postgres --KAFKA_BOOTSTRAP_SERVER kafka-2 --KAFKA_BOOTSTRAP_PORT 29092 --ELASTIC_SERVER es-container"]
 
- 
   flink-taskmanager: 
     image: flink:2.0.0-java17
     container_name: flink-taskmanager
@@ -67,9 +70,12 @@ services:
       - postgres
       - elasticsearch
     environment:
-      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
-      - JOB_MANAGER_RPC_PORT=6123
-      - TASK_MANAGER_NUMBER_OF_TASK_SLOTS=4
+     - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.rpc.port: 6123
+        taskmanager.numberOfTaskSlots: 4
+        parallelism.default: 2
     networks:
       - kafka-flink-net
     entrypoint: ["/docker-entrypoint.sh", "taskmanager"]  
