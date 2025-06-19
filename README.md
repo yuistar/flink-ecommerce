@@ -13,7 +13,17 @@ The project has updated the versions of Kafka to use Kraft instead of zookeeper;
 
 ### Setup 
  - Start docker containers in ```docker-compose.yml```
- - Install Apache Flink (on Local)
+ - Start Flink DataStream Job on Docker Container
+   ```
+    docker exec flink-jobmanager /opt/flink/bin/flink run -c FlinkCommerce.DataStreamJob /opt/flink/datastream/FlinkEcommerce-2.0-SNAPSHOT.jar --POSTGRES_HOSTNAME postgres --KAFKA_BOOTSTRAP_SERVER kafka-2 --KAFKA_BOOTSTRAP_PORT 29092 --ELASTIC_SERVER es-container
+   ```
+- Produce data to Kafka using ```TransactionGen``` in Python
+  ```
+  cd $PROJECT_HOME
+  python3 producer.py
+  ```
+  
+Or you can [install Apache Flink locally](https://www.apache.org/dyn/closer.lua/flink/flink-2.0.0/flink-2.0.0-bin-scala_2.12.tgz)
  - Customize Flink configuration `````$FLINK_HOME/conf/config.yaml`````
    - Increase number of Tasks: 
      ```
@@ -29,11 +39,6 @@ The project has updated the versions of Kafka to use Kraft instead of zookeeper;
  - Start Flink Server
     ```
     $FLINK_HOME/bin ./start_cluster.sh
-    ```
- - Produce data using ```TransactionGen``` in Python
-    ```
-    cd $PROJECT_HOME
-    python3 producer.py
     ```
  - Start Flink DataStream Job
     ```
@@ -51,9 +56,9 @@ In Elastic Dev Tools, you can run Elasticsearch API such as
 
 
 ### Learning 
-- Flink DataStreamAPI and its architecture
+- Flink [DataStreamAPI](https://nightlies.apache.org/flink/flink-docs-release-2.0/docs/dev/datastream/overview/) and its architecture
   ![](flink-server-runtime.png)
 
 ### To Do
 - Add unit tests 
-- Containerize Apache Flink services 
+- ~~Containerize Apache Flink services~~ (Done) 

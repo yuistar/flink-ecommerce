@@ -43,18 +43,16 @@ import org.apache.flink.connector.jdbc.core.datastream.sink.JdbcSink;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 
+import org.apache.flink.util.ParameterTool;
 import org.apache.http.HttpHost;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.client.Requests;
 import org.elasticsearch.common.xcontent.XContentType;
-import org.postgresql.xa.PGXADataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.Date;
-import java.util.function.Supplier;
-import javax.sql.XADataSource;
 
 import static FlinkCommerce.utils.JsonUtil.convertObjectToJson;
 
@@ -71,19 +69,33 @@ import static FlinkCommerce.utils.JsonUtil.convertObjectToJson;
  * method, change the respective entry in the POM.xml file (simply search for 'mainClass').
  */
 public class DataStreamJob {
-    public static final String bootstrapServer = "localhost:9092";
-    private static final String jdbcUrl = "jdbc:postgresql://localhost:5432/postgres";
-    private static final String username = "postgres";
-    private static final String password = "postgres";
-    private static final Logger LOG = LoggerFactory.getLogger(DataStreamJob.class);
 
+    private static final Logger LOG = LoggerFactory.getLogger(DataStreamJob.class);
 
     public static void main(String[] args) throws Exception {
         // Sets up the execution environment, which is the main entry point to building Flink applications.
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.enableCheckpointing(1000, CheckpointingMode.EXACTLY_ONCE);
-
+        ParameterTool parameters = ParameterTool.fromArgs(args);
+//        if ( parameters.getProperties() == null ) {
+//            parameters = ParameterTool.fromArgs(args);
+//        }
+        final String bootstrapServer = "%s:%s".formatted(parameters.get("KAFKA_BOOTSTRAP_SERVER", "localhost"),
+                parameters.get("KAFKA_BOOTSTRAP_PORT", "9091"));
+        final String jdbcUrl = "jdbc:postgresql://%s:%s/%s".formatted(parameters.get("POSTGRES_HOSTNAME", "localhost"),
+                parameters.get("POSTGRES_PORT", "5432"),
+                parameters.get("POSTGRES_DB", "postgres"));
+        final String username = parameters.get("POSTGRES_USERNAME", "postgres");
+        final String password = parameters.get("POSTGRES_PASSWORD", "postgres");
+        System.out.println("postgres host= " + jdbcUrl);
+        System.out.println("kafka host= " + bootstrapServer);
         final String topic = "product_transactions";
+
+        final String elasticServer = parameters.get("ELASTIC_SERVER", "localhost");
+        final int elasticPort = Integer.parseInt(parameters.get("ELASTIC_PORT", "9200"));
+        final String elasticHttpProtocol = parameters.get("ELASTIC_HTTP", "http");
+        System.out.println("elastic host= " + elasticHttpProtocol + "://" + elasticServer + ":" + elasticPort);
+//        JsonSerializationSchema<Transaction> jsonFormat = new JsonSerializationSchema<>();
 
         KafkaSource<Transaction> source = KafkaSource.<Transaction>builder()
                 .setBootstrapServers(bootstrapServer)
@@ -118,14 +130,8 @@ public class DataStreamJob {
                 .withUsername(username)
                 .withPassword(password).build();
 
-        PGXADataSource xaDataSource = new org.postgresql.xa.PGXADataSource();
-        xaDataSource.setUrl(jdbcUrl);
-        xaDataSource.setUser(username);
-        xaDataSource.setPassword(password);
-        Supplier<XADataSource> dataSourceSupplier = () -> xaDataSource;
-
         // in postgres, create transaction table (if not exist)
-        transactionStream.sinkTo(JdbcSink.<Transaction>builder()
+        transactionStream.sinkTo(JdbcSink.<Transaction> builder()
                         .withQueryStatement(
                 "CREATE TABLE IF NOT EXISTS transactions (" +
                         "transaction_id VARCHAR(255) PRIMARY KEY, " +
@@ -145,7 +151,7 @@ public class DataStreamJob {
                 .name("Create Transaction Table Sink");
 
         // in postgres, create sales_per_category table
-        transactionStream.sinkTo(JdbcSink.<Transaction>builder()
+        transactionStream.sinkTo(JdbcSink.<Transaction> builder()
                 .withQueryStatement(
                 "CREATE TABLE IF NOT EXISTS sales_per_category (" +
                         "transaction_date DATE, " +
@@ -161,10 +167,10 @@ public class DataStreamJob {
         //create sales_per_day table sink
         transactionStream.sinkTo(JdbcSink.<Transaction>builder()
                 .withQueryStatement(
-                        "CREATE TABLE IF NOT EXISTS sales_per_day (" +
-                        "transaction_date DATE PRIMARY KEY, " +
-                        "total_sales DOUBLE PRECISION " +
-                        ")",
+                    "CREATE TABLE IF NOT EXISTS sales_per_day (" +
+                    "transaction_date DATE PRIMARY KEY, " +
+                    "total_sales DOUBLE PRECISION " +
+                    ")",
                 (JdbcStatementBuilder<Transaction>) (preparedStatement, transaction) -> {})
                 .withExecutionOptions(execOptions)
                 .buildAtLeastOnce(connOptions))
@@ -186,7 +192,7 @@ public class DataStreamJob {
 
         // upsert the transaction data
         // Exactly once is guaranteed by primary key as well as performing upsert by handling conflict
-        // Flink's JDBC connector expects ? placeholders, not PostgreSQL's native $1, $2, $3... syntax
+        // Flink's JDBC connector expects ? placeholders, not PostgresSQL's native $1, $2, $3... syntax
         transactionStream.sinkTo(JdbcSink.<Transaction>builder()
                 .withQueryStatement(
                 "INSERT INTO transactions(transaction_id, product_id, product_name, product_category, product_price, " +
@@ -312,7 +318,7 @@ public class DataStreamJob {
 
         // add to elastic search
         transactionStream.sinkTo(new Elasticsearch7SinkBuilder<Transaction>()
-                        .setHosts(new HttpHost("localhost", 9200, "http"))
+                        .setHosts(new HttpHost(elasticServer, elasticPort, elasticHttpProtocol))
                         .setEmitter((transaction, runtimeContext, requestIndexer) -> {
                             LOG.info("emit transaction= {}", convertObjectToJson(transaction));
                             if (transaction != null && transaction.getTransactionId() != null) {
@@ -333,6 +339,10 @@ public class DataStreamJob {
                 .name("Elasticsearch sink");
 
         // Execute program, beginning computation.
+        // When env.execute() is called, the job graph is packaged up and sent
+        //      to the JobManager, which parallelizes the job and distributes slices of it
+        //      to the Task Managers for execution.
+        //      Each parallel slice of your job will be executed in a task slot.
         env.execute("Flink Ecommerce Realtime Streaming");
     }
 }
